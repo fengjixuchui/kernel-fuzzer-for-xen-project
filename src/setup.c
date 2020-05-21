@@ -11,7 +11,7 @@ static event_response_t start_cpuid_cb(vmi_instance_t vmi, vmi_event_t *event)
 
     if ( event->cpuid_event.leaf == 0x13371337 )
     {
-        printf("Got start cpuid callback with leaf: 0x%x @ 0x%lx\n", event->cpuid_event.leaf, event->x86_regs->rip);
+        printf("Got start cpuid callback with leaf: 0x%x 0x%lx\n", event->cpuid_event.leaf, event->x86_regs->rip);
 
         vmi_clear_event(vmi, event, NULL);
         return VMI_EVENT_RESPONSE_SET_REGISTERS | VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
@@ -42,7 +42,11 @@ static event_response_t start_cc_cb(vmi_instance_t vmi, vmi_event_t *event)
     };
 
     if ( VMI_SUCCESS == vmi_write_8(vmi, &ctx, &start_byte) )
+    {
+        event->interrupt_event.reinject = 0;
         parent_ready = 1;
+    } else
+        event->interrupt_event.reinject = 1;
 
     vmi_pause_vm(vmi);
     interrupted = 1;
@@ -88,44 +92,36 @@ static void waitfor_start(vmi_instance_t vmi)
 
 bool make_parent_ready(void)
 {
-    bool ret = false;
-
-    if ( !setup_vmi(&vmi, domain, domid, json, setup, true) )
+    if ( !setup_vmi(&parent_vmi, domain, domid, json, setup, true) )
     {
         fprintf(stderr, "Unable to start VMI on domain\n");
-        goto done;
+        return false;
     }
 
-    vcpus = vmi_get_num_vcpus(vmi);
+    vcpus = vmi_get_num_vcpus(parent_vmi);
 
     if ( vcpus > 1 )
     {
-        fprintf(stderr, "The target domain has more then 1 vCPUs, not supported\n");
+        fprintf(stderr, "The target domain has more then 1 vCPUs: %u, not supported\n", vcpus);
         return false;
     }
 
     if ( !domain )
-        domain = vmi_get_name(vmi);
+        domain = vmi_get_name(parent_vmi);
     if ( !domid )
-        domid = vmi_get_vmid(vmi);
+        domid = vmi_get_vmid(parent_vmi);
     if ( setup )
-        waitfor_start(vmi);
+        waitfor_start(parent_vmi);
     else
-        parent_ready = true;
+        parent_ready = setup_sinks(parent_vmi);
 
-    if ( !parent_ready )
+    if ( !parent_ready || setup )
     {
-        fprintf(stderr, "Unable to make domain fork ready\n");
-        goto done;
+        vmi_destroy(parent_vmi);
+        parent_vmi = NULL;
     }
 
-    setup_sinks(vmi);
+    printf("Parent %s ready\n", parent_ready ? "is" : "is not");
 
-    printf("Parent ready\n");
-    ret = true;
-
-done:
-    vmi_destroy(vmi);
-    vmi = NULL;
-    return ret;
+    return parent_ready;
 }

@@ -4,7 +4,6 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <signal.h>
 #include <string.h>
 #include <getopt.h>
 #include <unistd.h>
@@ -39,7 +38,7 @@ addr_t address;
 unsigned long limit;
 
 xc_interface *xc;
-vmi_instance_t vmi;
+vmi_instance_t parent_vmi, vmi;
 os_t os;
 addr_t target_pagetable;
 addr_t start_rip;

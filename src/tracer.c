@@ -11,8 +11,21 @@ enum sink_enum {
 };
 /* Now define what symbol each enum entry corresponds to in the debug json */
 static const char *sinks[] = {
-    [OOPS_BEGIN] = "oops_begin",
     [PANIC] = "panic",
+
+    /*
+     * We can define as many sink points as we want. These sink points don't have
+     * to be strictly functions that handle "crash" situations. We can define any
+     * code location as a sink point that we would want to know about if it is reached
+     * during fuzzing. For example the testmodule triggering a NULL-deref doesn't crash
+     * the kernel, it simply causes an "oops" message to be printed to the kernel logs.
+     * However, if there is an input that causes something like that then it warrants
+     * being recorded.
+     *
+     * So in essence we can define the sink points as anything of interest that we would
+     * want AFL to record if its reached.
+     */
+    [OOPS_BEGIN] = "oops_begin",
 };
 
 /* !!!!!!!!!!!!!!!! */
@@ -253,21 +266,6 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
  * Saves you a couple full-page copies that we otherwise do for
  * each fork. Can improve performance a bit.
  */
-static bool trap_sinks(vmi_instance_t vmi)
-{
-    int c;
-    for(c=0; c < __SINK_MAX; c++)
-    {
-        if ( VMI_SUCCESS == vmi_write_pa(vmi, sink_paddr[c], 1, &cc, NULL) )
-        {
-            if ( debug ) printf("[TRACER] Setting breakpoint on sink %s 0x%lx -> 0x%lx\n", sinks[c], sink_vaddr[c], sink_paddr[c]);
-        } else
-            return false;
-    }
-
-    return true;
-}
-
 bool setup_sinks(vmi_instance_t vmi)
 {
     int c;
@@ -279,13 +277,26 @@ bool setup_sinks(vmi_instance_t vmi)
             return false;
         }
 
-        if ( VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, sink_vaddr[c], &sink_paddr[c]) )
+        if ( VMI_FAILURE == vmi_translate_kv2p(vmi, sink_vaddr[c], &sink_paddr[c]) )
             return false;
         if ( VMI_FAILURE == vmi_read_pa(vmi, sink_paddr[c], 1, &sink_backup[c], NULL) )
             return false;
+        if ( VMI_FAILURE == vmi_write_pa(vmi, sink_paddr[c], 1, &cc, NULL) )
+            return false;
+
+        if ( debug )
+            printf("[TRACER] Setting breakpoint on sink %s 0x%lx -> 0x%lx, backup 0x%x\n",
+                   sinks[c], sink_vaddr[c], sink_paddr[c], sink_backup[c]);
     }
 
     return true;
+}
+
+void clear_sinks(vmi_instance_t vmi)
+{
+    int c;
+    for(c=0; c < __SINK_MAX; c++)
+        vmi_write_pa(vmi, sink_paddr[c], 1, &sink_backup[c], NULL);
 }
 
 bool setup_trace(vmi_instance_t vmi)
@@ -328,7 +339,6 @@ bool start_trace(vmi_instance_t vmi, addr_t address) {
     }
 
     breakpoint_next_cf(vmi);
-    trap_sinks(vmi);
     return true;
 }
 

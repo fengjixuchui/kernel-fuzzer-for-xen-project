@@ -34,6 +34,8 @@ This project is licensed under the terms of the MIT license
 
 # Setup instruction for Debian/Ubuntu:
 
+The following instructions have been mainly tested on Debian Bullseye and Ubuntu 20.04. The actual package names may vary on different distros/versions. You may also find [https://wiki.xenproject.org/wiki/Compiling_Xen_From_Source](https://wiki.xenproject.org/wiki/Compiling_Xen_From_Source) helpful if you run into issues.
+
 # 1. Install dependencies <a name="section-1"></a>
 ----------------------------------
 ```
@@ -116,6 +118,8 @@ efibootmgr -c -d /dev/sda -p 1 -w -L "Xen" -l "\EFI\xen\xen.efi"
 reboot
 ```
 
+You may want to use the `-C` option above if you are on a remote system so you can set only the next-boot to try Xen. This is helpful in case the system can't boot Xen and you don't have remote KVM to avoid losing access in case Xen can't boot for some reason. Use `efibootmgr --bootnext <BOOT NUMBER FOR XEN>` to try boot Xen only on the next reboot.
+
 # 4. Create VM disk image <a name="section-4"></a>
 ----------------------------------
 20GB is usually sufficient but if you are planning to compile the kernel from source you will want to increase that.
@@ -173,7 +177,8 @@ Follow the installation instructions in the VNC session. Configure the network m
 On Debian systems you can install everything right away
 
 ```
-sudo apt update && sudo apt install linux-image-$(uname -r)-dbg linux-headers-$(uname-r)
+su -
+apt update && sudo apt install linux-image-$(uname -r)-dbg linux-headers-$(uname -r)
 ```
 
 On Ubuntu to install the Kernel debug symbols please follow the following tutorial: [https://wiki.ubuntu.com/Debug%20Symbol%20Packages](https://wiki.ubuntu.com/Debug%20Symbol%20Packages)
@@ -182,7 +187,7 @@ From the VM copy `/usr/lib/debug/boot/vmlinux-$(uname -r)` and `/boot/System.map
 
 # 8. Configure the VM's console <a name="section-8"></a>
 ---------------------------------
-Edit `/etc/default/grub` and add `console=ttyS0` to `GRUB_CMDLINE_LINUX_DEFAULT` line. Run `sudo update-grub` afterwards.
+Edit `/etc/default/grub` and add `console=ttyS0` to `GRUB_CMDLINE_LINUX_DEFAULT` line. Run `update-grub` afterwards and `reboot`.
 
 # 9. Build the kernel's debug JSON profile <a name="section-9"></a>
 ---------------------------------
