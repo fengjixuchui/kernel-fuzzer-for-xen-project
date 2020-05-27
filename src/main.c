@@ -2,20 +2,30 @@
 
 static void get_input(void)
 {
-    if ( !input_file || !input_limit )
+    if ( !input_limit )
         return;
 
     if ( debug ) printf("Get %lu bytes of input from %s\n", input_limit, input_path);
 
-    input = malloc(input_size);
-    if ( !input )
+    input_file = fopen(input_path, "r");
+    if (!input_file){
         return;
+    }
+
+    input = malloc(input_size);
+    if ( !input ){
+        fclose(input_file);
+        input_file = NULL;
+        return;
+    }
 
     if ( !(input_size = fread(input, 1, input_limit, input_file)) )
     {
         free(input);
         input = NULL;
     }
+    fclose(input_file);
+    input_file = NULL;
 
     if ( debug ) printf("Got input size %lu\n", input_size);
 }
@@ -257,13 +267,6 @@ int main(int argc, char** argv)
     if ( setup )
         return parent_ready ? 0 : -1;
 
-    input_file = fopen(input_path,"r");
-    if ( !input_file )
-    {
-        printf("Failed to open input file %s\n", input_path);
-        return -1;
-    }
-
     if ( !(xc = xc_interface_open(0, 0, 0)) )
     {
         fprintf(stderr, "Failed to grab xc interface\n");
@@ -283,6 +286,15 @@ int main(int argc, char** argv)
     }
 
     afl_setup();
+
+    input_file = fopen(input_path,"r"); // Sanity check
+    if ( !input_file )
+    {
+        printf("Failed to open input file %s\n", input_path);
+        return -1;
+    }
+    fclose(input_file); // Closing for now, will reopen when needed
+    input_file = NULL;
 
     if ( !afl ) printf("Fork VM created: %i\n", forkdomid);
 
