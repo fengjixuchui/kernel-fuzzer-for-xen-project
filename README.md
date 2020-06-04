@@ -1,4 +1,4 @@
-# kfx: VMI Kernel Fuzzer for Xen Project*
+# VMI Kernel Fuzzer for Xen Project*
 
 This project is intended to illustrate the harnessing required to fuzz a Linux kernel module using AFL through the Xen VMI API. The tool utilizes Xen VM forks to perform the fuzzing, thus
 allowing for parallel fuzzing/multiple AFL instances to fuzz at the same time. Coverage guidance for AFL is achieved using Capstone to dynamically disassemble the target code to locate
@@ -23,31 +23,32 @@ This project is licensed under the terms of the MIT license
 8. [Configure the VM's console](#section-8)
 9. [Build the kernel's debug JSON profile](#section-9)
 10. [Compile & install Capstone](#section-10)
-10. [Compile & install LibVMI](#section-11)
-11. [Compile kfx](#section-12)
-12. [Patch AFL](#section-13)
-13. [Add harness](#section-14)
-14. [Setup the VM for fuzzing](#section-15)
-15. [Connect to the VM's console](#section-16)
-16. [Insert the target kernel module](#section-17)
-17. [Star fuzzing using AFL](#section-18)
-18. [Debugging](#section-19)
+11. [Compile & install LibVMI](#section-11)
+12. [Compile kfx](#section-12)
+13. [Patch AFL](#section-13)
+14. [Add harness](#section-14)
+15. [Setup the VM for fuzzing](#section-15)
+16. [Connect to the VM's console](#section-16)
+17. [Insert the target kernel module](#section-17)
+18. [Star fuzzing using AFL](#section-18)
+19. [Debugging](#section-19)
+20. [FAQ](#section-20)
 
-# Setup instruction for Debian/Ubuntu:
+# Setup instruction for Ubuntu:
 
 The following instructions have been mainly tested on Debian Bullseye and Ubuntu 20.04. The actual package names may vary on different distros/versions. You may also find [https://wiki.xenproject.org/wiki/Compiling_Xen_From_Source](https://wiki.xenproject.org/wiki/Compiling_Xen_From_Source) helpful if you run into issues.
 
 # 1. Install dependencies <a name="section-1"></a>
 ----------------------------------
 ```
-sudo apt install git build-essential libfdt-dev libpixman-1-dev libssl-dev libsdl1.2-dev autoconf libtool xtightvncviewer tightvncserver x11vnc libsdl1.2-dev uuid-runtime uuid-dev bridge-utils python3-dev liblzma-dev libc6-dev wget git bcc bin86 gawk iproute2 libcurl4-openssl-dev bzip2 libpci-dev libc6-dev libc6-dev-i386 linux-libc-dev zlib1g-dev libncurses5-dev patch libvncserver-dev libssl-dev libsdl-dev iasl libbz2-dev e2fslibs-dev ocaml libx11-dev bison flex ocaml-findlib xz-utils gettext libyajl-dev libpixman-1-dev libaio-dev libfdt-dev cabextract libglib2.0-dev autoconf automake libtool libjson-c-dev libfuse-dev liblzma-dev autoconf-archive kpartx python3-pip gcc-7 libsystemd-dev cmake
+sudo apt install git build-essential libfdt-dev libpixman-1-dev libssl-dev libsdl1.2-dev autoconf libtool xtightvncviewer tightvncserver x11vnc libsdl1.2-dev uuid-runtime uuid-dev bridge-utils python3-dev liblzma-dev libc6-dev wget git bcc bin86 gawk iproute2 libcurl4-openssl-dev bzip2 libpci-dev libc6-dev libc6-dev-i386 linux-libc-dev zlib1g-dev libncurses5-dev patch libvncserver-dev libssl-dev libsdl-dev iasl libbz2-dev e2fslibs-dev ocaml libx11-dev bison flex ocaml-findlib xz-utils gettext libyajl-dev libpixman-1-dev libaio-dev libfdt-dev cabextract libglib2.0-dev autoconf automake libtool libjson-c-dev libfuse-dev liblzma-dev autoconf-archive kpartx python3-pip gcc-7 libsystemd-dev cmake snap
 ```
 
 # 2. Grab the project and all submodules <a name="section-2"></a>
 ----------------------------------
 ```
-git clone https://github.com/intel/kfx-for-xen-project
-cd kfx-for-xen-project
+git clone https://github.com/intel/kernel-fuzzer-for-xen-project
+cd kernel-fuzzer-for-xen-project
 git submodule update --init
 ```
 
@@ -195,6 +196,7 @@ Edit `/etc/default/grub` and add `console=ttyS0` to `GRUB_CMDLINE_LINUX_DEFAULT`
 Change the paths to match your setup
 
 ```
+sudo snap install --classic go
 cd dwarf2json
 go build
 ./dwarf2json linux --elf /path/to/vmlinux --system-map /path/to/System.map > ~/debian.json
@@ -279,6 +281,8 @@ You can insert the harness before and after the code segment you want to fuzz:
     harness();
 ```
 
+You can also use software breakpoints (0xCC) as your harness which can be placed by standard debuggers like GDB. Use `--harness-type breakpoint` for this mode, which is particularly useful when you don't have access to the target's source-code to compile it with the CPUID-based harness.
+
 # 15. Setup the VM for fuzzing <a name="section-15"></a>
 ---------------------------------
 Start `./kfx`  with the `--setup` option specified. This will wait for the domain to issue the harness CPUID and will leave the domain paused. This ensures that the VM is at the starting location of the code we want to fuzz when we fork it.
@@ -344,6 +348,10 @@ This tool currently only targets Linux. You can modify the harness to target Win
 > Can I just pipe /dev/random in as fuzzing input?
 
 Yes! You can use `--loopmode` to simply read input from whatever source you want and pipe it into the VM forks. In this mode coverage trace is disabled so you will see more iterations per second.
+
+> Any tricks to increase performance?
+
+To max out performance you can boot Xen with "dom0_max_vcpus=2 sched=null spec-ctrl=no-xen" which assigns only 2 vCPUs to dom0, disables the scheduler and speculative execution hardening features. You can also add "smt=0" to disable hyper-threading. Make sure your system has enough physical cores to run each vCPU as they get pinned.
 
 ---------------------------------
 *Other names and brands may be claimed as the property of others
