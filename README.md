@@ -88,12 +88,14 @@ echo "none /proc/xen xenfs defaults,nofail 0 0" >> /etc/fstab
 systemctl enable xen-qemu-dom0-disk-backend.service
 systemctl enable xen-init-dom0.service
 systemctl enable xenconsoled.service
-echo "GRUB_CMDLINE_XEN_DEFAULT=\"console=vga hap_1gb=false hap_2mb=false\"" > /etc/default/grub
+echo "GRUB_CMDLINE_XEN_DEFAULT=\"hap_1gb=false hap_2mb=false dom0_mem=4096M\"" >> /etc/default/grub
 update-grub
 reboot
 ```
 
 Make sure to pick the Xen entry in GRUB when booting. You can verify you booted into Xen correctly by running `xen-detect`.
+
+Note that we assign 4GB RAM to dom0 above which is a safe default but feel free to increase that if your system has a lot of RAM available.
 
 ## 3.b Booting from UEFI
 
@@ -137,11 +139,13 @@ dd if=/dev/zero of=vmdisk.img bs=1G count=20
 # 5. Setup networking <a name="section-5"></a>
 ----------------------------------
 ```
-sudo brctl addbr xenbr0
-sudo ip addr add 10.0.0.1/24 dev xenbr0
-sudo ip link set xenbr0 up
-sudo echo 1 > /proc/sys/net/ipv4/ip_forward
-sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+sudo su
+brctl addbr xenbr0
+ip addr add 10.0.0.1/24 dev xenbr0
+ip link set xenbr0 up
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+exit
 ```
 
 You might also want to save this as a script or add it to [/etc/rc.local](https://www.linuxbabe.com/linux-server/how-to-enable-etcrc-local-with-systemd)
@@ -174,8 +178,16 @@ disk=['file:/path/to/vmdisk.img,xvda,w',
 Start the VM with:
 
 ```
-sudo xl create -A -V debian.cfg
+sudo xl create debian.cfg
 ```
+
+You can connect to the VNC session using your favorite VNC viewer or by simply running:
+
+```
+vncviewer localhost
+```
+
+In case it's a remote system replace localhost with the IP of the system; note however that the VNC connection is not encrypted so it may be better to setup an SSH tunnel to connect through.
 
 Follow the installation instructions in the VNC session. Configure the network manually to 10.0.0.2 with a default route via 10.0.0.1
 
@@ -198,10 +210,17 @@ Inside the VM, edit `/etc/default/grub` and add `console=ttyS0` to `GRUB_CMDLINE
 
 # 9. Build the kernel's debug JSON profile <a name="section-9"></a>
 ---------------------------------
-Back in dom0, we'll convert the dwarf debug information to json that we copied in Step 7. Change the paths to match your setup and make sure your dom0 has enough RAM as this may take up a lot of it:
+Back in dom0, we'll convert the dwarf debug information to json that we copied in Step 7.  We'll need Go 1.13 or newer for this. You can install it using snap as follows:
 
 ```
 sudo snap install --classic go
+```
+
+If you distro's repository has go 1.13 or newer you can also install it from there (package name is golang-go).
+
+Now we can build dwarf2json and generate the JSON profile. Change the paths to match your setup and make sure your dom0 has enough RAM as this may take up a lot of it.
+
+```
 cd dwarf2json
 go build
 ./dwarf2json linux --elf /path/to/vmlinux --system-map /path/to/System.map > ~/debian.json
@@ -265,18 +284,12 @@ See the `testmodule` folder for an example.
 ```
 static inline void harness(void)
 {
-    asm (
-        "push %rax\n\t"
-        "push %rbx\n\t"
-        "push %rcx\n\t"
-        "push %rdx\n\t"
-        "movq $0x13371337,%rax\n\t"
-        "cpuid\n\t"
-        "pop %rdx\n\t"
-        "pop %rcx\n\t"
-        "pop %rbx\n\t"
-        "pop %rax\n\t"
-    );
+    unsigned int tmp;
+
+    asm volatile ("cpuid"
+                  : "=a" (tmp)
+                  : "a" (0x13371337)
+                  : "bx", "cx", "dx");
 }
 ```
 
@@ -348,11 +361,11 @@ sudo ./kfx --domain debian --json ~/debian.json --debug --input /path/to/input/f
 
 > Can I run this on ring3 applications?
 
-You likely get better performance if you run AFL natively on a ring3 application but nothing prevents you from running it via this tool. You would need to adjust the sink points in `src/tracer.c` to catch the crash handlers that are called for ring3 apps. For example `do_trap_error` in Linux handles segfaults, you would probably want to catch that.
+You likely get better performance if you run AFL natively on a ring3 application but nothing prevents you from running it via this tool. You would need to adjust the sink points in `src/sink.h` to catch the crash handlers that are called for ring3 apps. For example `do_trap_error` in Linux handles segfaults, you would probably want to catch that.
 
 > Can I fuzz Windows?
 
-This tool currently only targets Linux. You can modify the harness to target Windows or any other operating system by adjusting the sink points in `src/tracer.c` that are used to catch a crash condition. You could also manually define the sink points' addresses in case the operating system is not supported by LibVMI. In case you want to fuzz closed-source portions of Windows where you can't inject the `cpuid`-based harness, you can use `--harness breakpoint` to switch to using breakpoints as your harness. This allows you to mark the code-region to fuzz with a standard debugger like WinDBG.
+This tool currently only targets Linux. You can modify the harness to target Windows or any other operating system by adjusting the sink points in `src/sink.h` that are used to catch a crash condition. You could also manually define the sink points' addresses in case the operating system is not supported by LibVMI. In case you want to fuzz closed-source portions of Windows where you can't inject the `cpuid`-based harness, you can use `--harness breakpoint` to switch to using breakpoints as your harness. This allows you to mark the code-region to fuzz with a standard debugger like WinDBG.
 
 > Can I just pipe /dev/random in as fuzzing input?
 
