@@ -5,6 +5,8 @@ allowing for parallel fuzzing/multiple AFL instances to fuzz at the same time. C
 the next control-flow instruction. The instruction is breakpointed and when the breakpoint triggers, MTF is activated to advance the VM ahead, then the processes is repeated again. The
 tool allows fine-tuning how many control-flow instructions to allow the fuzzing to encounter before terminating. This provides an alternative to timing out the fuzzing process.
 
+Hardware requirements: Intel CPU with VT-x and EPT enabled.
+
 This project is licensed under the terms of the MIT license
 
 # Demo
@@ -73,8 +75,8 @@ sudo apt remove xen-* libxen*
 Now we can compile & install Xen
 ```
 cd xen
-echo XEN_CONFIG_EXPERT=y > .config
-echo CONFIG_MEM_SHARING=y > xen/.config
+echo CONFIG_EXPERT=y > xen/.config
+echo CONFIG_MEM_SHARING=y >> xen/.config
 ./configure --disable-pvshim --enable-githttp
 make -C xen olddefconfig
 make -j4 dist-xen
@@ -102,13 +104,14 @@ Note that we assign 4GB RAM to dom0 above which is a safe default but feel free 
 If Xen doesn't boot from GRUB you can try to boot it from UEFI directly <a name="section-3b"></a>
 
 ```
+sudo su
 mkdir -p /boot/efi/EFI/xen
-cp /usr/lib/efi/xen.efi /boot/efi/EFI/xen
+cp /usr/lib64/efi/xen.efi /boot/efi/EFI/xen
 cp /boot/vmlinuz /boot/efi/EFI/xen
 cp /boot/initrd.img /boot/efi/EFI/xen
 ```
 
-Gather your kernel boot command line from /proc/cmdline & paste the following into /boot/efi/EFI/xen/xen.cfg:
+Gather your kernel boot command line's relevant bits from /proc/cmdline. Copy & paste the following into /boot/efi/EFI/xen/xen.cfg:
 
 ```
 [global]
@@ -127,7 +130,7 @@ efibootmgr -c -d /dev/sda -p 1 -w -L "Xen" -l "\EFI\xen\xen.efi"
 reboot
 ```
 
-You may want to use the `-C` option above if you are on a remote system so you can set only the next-boot to try Xen. This is helpful in case the system can't boot Xen and you don't have remote KVM to avoid losing access in case Xen can't boot for some reason. Use `efibootmgr --bootnext <BOOT NUMBER FOR XEN>` to try boot Xen only on the next reboot.
+You may want to use the `-C` option above instead of `-c` if you are on a remote system so you can set only the next-boot to try Xen. This is helpful in case the system can't boot Xen and you don't have remote KVM to avoid losing access in case Xen can't boot for some reason. Use `efibootmgr --bootnext <BOOT NUMBER FOR XEN>` to try boot Xen only on the next reboot.
 
 # 4. Create VM disk image <a name="section-4"></a>
 ----------------------------------
@@ -138,17 +141,35 @@ dd if=/dev/zero of=vmdisk.img bs=1G count=20
 
 # 5. Setup networking <a name="section-5"></a>
 ----------------------------------
+
+Create a network bridge using NetPlan at /etc/netplan/02-xenbr0.yaml:
 ```
-sudo su
-brctl addbr xenbr0
-ip addr add 10.0.0.1/24 dev xenbr0
-ip link set xenbr0 up
-echo 1 > /proc/sys/net/ipv4/ip_forward
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-exit
+network:
+  version: 2
+  renderer: networkd
+  bridges:
+    xenbr0:
+      dhcp4: no
+      addresses: [ 10.0.0.1/24 ]
 ```
 
-You might also want to save this as a script or add it to [/etc/rc.local](https://www.linuxbabe.com/linux-server/how-to-enable-etcrc-local-with-systemd)
+Apply the NetPlan configuration:
+```
+sudo netplan generate
+sudo netplan apply
+```
+
+Enable IP forwarding:
+```
+sudo echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sudo sysctl --system
+```
+
+Enable NAT and save the iptables rule, make sure to change eth0 to match your interface name facing the internet:
+```
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+sudo apt-get install iptables-persistent
+```
 
 # 6. Create VM <a name="section-6"></a>
 ----------------------------------
@@ -170,7 +191,7 @@ vnclisten="0.0.0.0"
 vncpasswd='1234567'
 usb=1
 usbdevice=['tablet']
-stdvga=1
+vga="stdvga"
 # Make sure to update the paths below!
 disk=['file:/path/to/vmdisk.img,xvda,w',
       'file:/path/to/debian.iso,xvdc:cdrom,r']
@@ -190,7 +211,7 @@ vncviewer localhost
 
 In case it's a remote system replace localhost with the IP of the system; note however that the VNC connection is not encrypted so it may be better to setup an SSH tunnel to connect through.
 
-Follow the installation instructions in the VNC session. Configure the network manually to 10.0.0.2 with a default route via 10.0.0.1
+Follow the installation instructions in the VNC session. Configure the network manually to 10.0.0.2/24 with a default route via 10.0.0.1
 
 # 7. Grab the kernel's debug symbols & headers <a name="section-7"></a>
 ----------------------------------
@@ -379,6 +400,10 @@ You can issue `xl shutdown <domain name>` to initiate shutdown. If there are VM 
 > Any tricks to increase performance?
 
 To max out performance you can boot Xen with "dom0_max_vcpus=2 sched=null spec-ctrl=no-xen" which assigns only 2 vCPUs to dom0, disables the scheduler and speculative execution hardening features. You can also add "smt=0" to disable hyper-threading. Make sure your system has enough physical cores to run each vCPU as they get pinned.
+
+> Is it possible to run the tool nested?
+
+Yes, it has been tested running on top of VMware Workstation. In the VMware VM's CPU settings make sure to enable the "Virtualize Intel VT-x/EPT" option. Performance will be lower as compared to running it directly on the hardware.
 
 ---------------------------------
 *Other names and brands may be claimed as the property of others

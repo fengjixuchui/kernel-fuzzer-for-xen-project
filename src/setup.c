@@ -99,6 +99,10 @@ bool make_parent_ready(void)
         return false;
     }
 
+    addr_t kaslr;
+    if ( debug && VMI_OS_LINUX == os && VMI_SUCCESS == vmi_get_offset(parent_vmi, "linux_kaslr", &kaslr) )
+        printf("Linux KASLR offset: 0x%lx\n", kaslr);
+
     if ( !domain )
         domain = vmi_get_name(parent_vmi);
     if ( !domid )
@@ -106,13 +110,10 @@ bool make_parent_ready(void)
     if ( setup )
         waitfor_start(parent_vmi);
     else
-        parent_ready = setup_sinks(parent_vmi);
+        parent_ready = true;
 
-    if ( !parent_ready || setup )
-    {
-        vmi_destroy(parent_vmi);
-        parent_vmi = NULL;
-    }
+    vmi_destroy(parent_vmi);
+    parent_vmi = NULL;
 
     printf("Parent %s ready\n", parent_ready ? "is" : "is not");
 

@@ -46,40 +46,44 @@ static bool inject_input(vmi_instance_t vmi)
     return VMI_SUCCESS == vmi_write(vmi, &ctx, input_size, input, NULL);
 }
 
-static bool make_fork_ready()
+static bool make_fuzz_ready()
 {
-    if ( !forkdomid )
+    if ( !fuzzdomid )
         return false;
 
-    if ( !setup_vmi(&vmi, NULL, forkdomid, NULL, true, false) )
+    if ( !setup_vmi(&vmi, NULL, fuzzdomid, NULL, true, false) )
     {
-        fprintf(stderr, "Unable to start VMI on domain\n");
+        fprintf(stderr, "Unable to start VMI on fuzz domain %u\n", fuzzdomid);
         return false;
     }
 
     setup_trace(vmi);
 
-    if ( debug ) printf("Fork ready\n");
+    if ( debug ) printf("VM Fork is ready for fuzzing\n");
 
     return true;
 }
 
-static bool fuzz_fork(void)
+static bool fuzz(void)
 {
-    if ( !forkdomid )
+    if ( !fuzzdomid )
+        return false;
+
+    if ( xc_memshr_fork_reset(xc, fuzzdomid) )
         return false;
 
     crash = 0;
 
     if ( afl )
     {
-        afl_rewind(start_rip);
+        afl_rewind();
+        afl_instrument_location(start_rip);
         afl_wait();
     }
 
     get_input();
 
-    if ( !loopmode && !start_trace(vmi, start_rip) )
+    if ( !start_trace(vmi, start_rip) )
         return false;
     if ( !inject_input(vmi) )
     {
@@ -97,7 +101,6 @@ static bool fuzz_fork(void)
     vmi_rvacache_flush(vmi);
     vmi_symcache_flush(vmi);
 
-    int rc = xc_memshr_fork_reset(xc, forkdomid);
     bool ret = false;
 
     if ( afl )
@@ -121,7 +124,7 @@ static bool fuzz_fork(void)
     free(input);
     input = NULL;
 
-    return ret && !rc;
+    return ret;
 }
 
 static void usage(void)
@@ -146,6 +149,9 @@ static void usage(void)
     printf("\t  --harness cpuid|breakpoint (default is cpuid)\n");
     printf("\t  --loopmode (Run in a loop without coverage trace, for example using /dev/urandom as input)\n");
     printf("\t  --refork <create new fork after # of executions>\n");
+    printf("\t  --keep (keep VM fork after kfx exits)\n");
+    printf("\t  --nocov (disable coverage tracing)\n");
+    printf("\t  --detect-doublefetch <kernel virtual address on page to detect doublefetch>\n");
 
     printf("\n\n");
     printf("Optional global inputs:\n");
@@ -174,11 +180,15 @@ int main(int argc, char** argv)
         {"start-byte", required_argument, NULL, 'S'},
         {"refork", required_argument, NULL, 'r'},
         {"loopmode", no_argument, NULL, 'O'},
+        {"keep", no_argument, NULL, 'K'},
+        {"nocov", no_argument, NULL, 'N'},
+        {"detect-doublefetch", required_argument, NULL, 'D'},
         {NULL, 0, NULL, 0}
     };
-    const char* opts = "d:i:j:f:a:l:F:H:S:svhO";
+    const char* opts = "d:i:j:f:a:l:F:H:S:svhOKND";
     limit = ~0;
     unsigned long refork = 0;
+    bool keep = false;
 
     harness_cpuid = true;
     input_path = NULL;
@@ -231,6 +241,16 @@ int main(int argc, char** argv)
             break;
         case 'O':
             loopmode = true;
+            nocov = true;
+            break;
+        case 'K':
+            keep = true;
+            break;
+        case 'N':
+            nocov = true;
+            break;
+        case 'D':
+            doublefetch = strtoull(optarg, NULL, 0);
             break;
         case 'h': /* fall-through */
         default:
@@ -267,6 +287,9 @@ int main(int argc, char** argv)
     if ( setup )
         return parent_ready ? 0 : -1;
 
+    if ( !parent_ready )
+        goto done;
+
     if ( !(xc = xc_interface_open(0, 0, 0)) )
     {
         fprintf(stderr, "Failed to grab xc interface\n");
@@ -279,9 +302,25 @@ int main(int argc, char** argv)
         goto done;
     }
 
-    if ( !fork_vm() )
+    /*
+     * To reduce the churn of placing the sink breakpoints into the VM fork's memory
+     * for each fuzzing iteration (which requires full-page copies for each breakpoint)
+     * we create a fork that will only be used to house the breakpointed sinks,
+     * ie. sinkdomid. We don't want to place the breakpoints in the parent VM
+     * since that would prohibit other kfx instances from running on the domain
+     * with potentially other sinkpoints.
+     *
+     * Fuzzing is performed from a further fork made from sinkdomid, in fuzzdomid.
+     */
+    if ( !fork_vm(domid, &sinkdomid) )
     {
-        fprintf(stderr, "Domain fork failed\n");
+        fprintf(stderr, "Domain fork failed, sink domain not up\n");
+        goto done;
+    }
+
+    if ( !fork_vm(sinkdomid, &fuzzdomid) )
+    {
+        fprintf(stderr, "Domain fork failed, fuzz domain not up\n");
         goto done;
     }
 
@@ -290,17 +329,27 @@ int main(int argc, char** argv)
     input_file = fopen(input_path,"r"); // Sanity check
     if ( !input_file )
     {
-        printf("Failed to open input file %s\n", input_path);
+        fprintf(stderr, "Failed to open input file %s\n", input_path);
         goto done;
     }
     fclose(input_file); // Closing for now, will reopen when needed
     input_file = NULL;
 
-    if ( !afl ) printf("Fork VM created: %i\n", forkdomid);
+    if ( !afl ) printf("Fork VMs created: %u -> %u -> %u\n", domid, sinkdomid, fuzzdomid);
 
-    make_fork_ready();
+    if ( !make_sink_ready() )
+    {
+        fprintf(stderr, "Seting up sinks on VM fork domid %u failed\n", sinkdomid);
+        goto done;
+    }
 
-    if ( debug ) printf("Starting fuzzer\n");
+    if ( !make_fuzz_ready() )
+    {
+        fprintf(stderr, "Seting up fuzzing on VM fork domid %u failed\n", fuzzdomid);
+        goto done;
+    }
+
+    if ( debug ) printf("Starting fuzzer on %u\n", fuzzdomid);
 
     if ( loopmode ) printf("Running in loopmode\n");
     else if ( afl )  printf("Running in AFL mode\n");
@@ -308,7 +357,7 @@ int main(int argc, char** argv)
 
     unsigned long iter = 0, t = time(0), cycle = 0;
 
-    while ( fuzz_fork() )
+    while ( fuzz() )
     {
         iter++;
 
@@ -327,13 +376,13 @@ int main(int argc, char** argv)
         {
             close_trace(vmi);
             vmi_destroy(vmi);
-            xc_domain_destroy(xc, forkdomid);
+            xc_domain_destroy(xc, fuzzdomid);
 
             iter = 0;
-            forkdomid = 0;
+            fuzzdomid = 0;
 
-            if ( fork_vm() )
-                make_fork_ready();
+            if ( fork_vm(sinkdomid, &fuzzdomid) )
+                make_fuzz_ready();
         }
     }
 
@@ -341,13 +390,11 @@ int main(int argc, char** argv)
     vmi_destroy(vmi);
 
 done:
-    if ( parent_vmi )
-    {
-        clear_sinks(parent_vmi);
-        vmi_destroy(parent_vmi);
-    }
-    if ( forkdomid )
-        xc_domain_destroy(xc, forkdomid);
+    if ( fuzzdomid && !keep )
+        xc_domain_destroy(xc, fuzzdomid);
+    if ( sinkdomid && !keep )
+        xc_domain_destroy(xc, sinkdomid);
+
     xc_interface_close(xc);
     cs_close(&cs_handle);
     if ( input_file )

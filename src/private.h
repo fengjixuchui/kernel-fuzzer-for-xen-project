@@ -27,13 +27,14 @@ char *input_path;
 size_t input_size;
 size_t input_limit;
 unsigned char *input;
-uint32_t domid, forkdomid;
+uint32_t domid, sinkdomid, fuzzdomid;
 bool afl;
 bool parent_ready;
 bool crash;
 bool setup;
 bool debug;
 bool loopmode;
+bool nocov;
 addr_t address;
 unsigned long limit;
 
@@ -45,6 +46,7 @@ addr_t start_rip;
 page_mode_t pm;
 int interrupted;
 int vcpus;
+addr_t doublefetch;
 
 bool harness_cpuid;
 uint8_t start_byte;
