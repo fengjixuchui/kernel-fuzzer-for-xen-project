@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2020 Intel Corporation
+ * SPDX-License-Identifier: MIT
+ */
 #include "private.h"
 #include "sink.h"
 
@@ -419,8 +423,8 @@ bool make_sink_ready(void)
          */
         if ( !sink_vaddr[c] && VMI_FAILURE == vmi_translate_ksym2v(sink_vmi, sinks[c], &sink_vaddr[c]) )
         {
-            if ( debug ) printf("Failed to find address for sink %s in the JSON\n", sinks[c]);
-            goto done;
+            fprintf(stderr, "Failed to find address for sink %s in the JSON\n", sinks[c]);
+            continue;
         }
 
         if ( !sink_paddr[c] && VMI_FAILURE == vmi_pagetable_lookup(sink_vmi, target_pagetable, sink_vaddr[c], &sink_paddr[c]) )

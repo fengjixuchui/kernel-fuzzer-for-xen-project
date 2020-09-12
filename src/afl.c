@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2020 Intel Corporation
+ * SPDX-License-Identifier: MIT
+ */
 #include "private.h"
 
 extern unsigned char* input;
@@ -11,7 +15,7 @@ extern unsigned char* input;
    after changing this - otherwise, SEGVs may ensue. */
 
 #define MAP_SIZE_POW2       16
-#define MAP_SIZE            (1 << MAP_SIZE_POW2)
+#define MAP_SIZE            (1ull << MAP_SIZE_POW2)
 
 /* Environment variable used to pass SHM ID to the called program. */
 
