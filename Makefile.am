@@ -10,7 +10,7 @@ kfx_SOURCES = src/main.c src/private.h \
               src/sink.h
 
 kfx_LDADD   = $(LIBS) $(VMI_LIBS) $(CAPSTONE_LIBS) $(LIBXC_LIBS) $(XENFMEM_LIBS) $(GLIB_LIBS)
-kfx_CFLAGS  = -Wall -Wextra -fstack-protector -Wno-override-init \
+kfx_CFLAGS  = -Wall -Wextra -fstack-protector -Wno-override-init -Wno-unused-variable \
               $(CFLAGS) $(VMI_CFLAGS) $(CAPSTONE_CFLAGS) $(LIBXC_CFLAGS) $(XENFMEM_CFLAGS) $(GLIB_CFLAGS)
 
 if STATIC_LIBXDC
@@ -35,8 +35,13 @@ rwmem_CFLAGS = $(CFLAGS) $(VMI_CFLAGS)
 
 bin_PROGRAMS += stepper
 stepper_SOURCES = src/stepper.c src/vmi.c src/vmi.h src/signal.c src/signal.h
-stepper_LDADD = $(LIBS) $(VMI_LIBS) $(CAPSTONE_LIBS) $(LIBXC_LIBS)
-stepper_CFLAGS = $(CFLAGS) $(VMI_CFLAGS) $(CAPSTONE_CFLAGS) $(LIBXC_CFLAGS)
+stepper_LDADD = $(LIBS) $(VMI_LIBS) $(CAPSTONE_LIBS) $(LIBXC_LIBS) $(GLIB_LIBS)
+stepper_CFLAGS = $(CFLAGS) $(VMI_CFLAGS) $(CAPSTONE_CFLAGS) $(LIBXC_CFLAGS) $(GLIB_CFLAGS)
+
+bin_PROGRAMS += dmamonitor
+dmamonitor_SOURCES = src/dmamonitor.c src/vmi.c src/vmi.h src/signal.c src/signal.h
+dmamonitor_LDADD = $(LIBS) $(VMI_LIBS) $(CAPSTONE_LIBS) $(LIBXC_LIBS) $(GLIB_LIBS)
+dmamonitor_CFLAGS = $(CFLAGS) $(VMI_CFLAGS) $(CAPSTONE_CFLAGS) $(LIBXC_CFLAGS) $(GLIB_CFLAGS)
 
 ACLOCAL_AMFLAGS=-I m4
 EXTRA_DIST = configure.ac README.md \

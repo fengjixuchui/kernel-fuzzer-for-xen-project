@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 #include "private.h"
-#include "sink.h"
 
 static const char *traptype[] = {
     [VMI_EVENT_SINGLESTEP] = "singlestep",
@@ -15,6 +14,7 @@ static vmi_event_t singlestep_event, int3_event, cpuid_event, ept_event;
 
 extern int interrupted;
 extern csh cs_handle;
+extern xc_interface *xc;
 
 /* doublefetch detection */
 static addr_t doublefetch_check_va;
@@ -90,7 +90,6 @@ static bool next_cf_insn(vmi_instance_t vmi, addr_t dtb, addr_t start)
     size_t count;
 
     size_t read, search = 0;
-    unsigned char buff[15];
     bool found = false;
     access_context_t ctx = {
         .translate_mechanism = VMI_TM_PROCESS_DTB,
@@ -98,9 +97,9 @@ static bool next_cf_insn(vmi_instance_t vmi, addr_t dtb, addr_t start)
         .addr = start
     };
 
-    while ( !found && search < TRACER_CF_SEARCH_LIMIT )
+    while ( !found && search++ < TRACER_CF_SEARCH_LIMIT )
     {
-        memset(buff, 0, 15);
+        unsigned char buff[15] = {0};
 
         if ( VMI_FAILURE == vmi_read(vmi, &ctx, 15, buff, &read) && !read )
         {
@@ -115,27 +114,21 @@ static bool next_cf_insn(vmi_instance_t vmi, addr_t dtb, addr_t start)
             goto done;
         }
 
-        size_t j;
-        for ( j=0; j<count; j++) {
+        if ( debug ) printf("Next instruction @ 0x%lx: %s, size %i!\n", insn[0].address, insn[0].mnemonic, insn[0].size);
+        ctx.addr += insn[0].size;
 
-            ctx.addr = insn[j].address + insn[j].size;
-
-            if ( debug ) printf("Next instruction @ 0x%lx: %s, size %i!\n", insn[j].address, insn[j].mnemonic, insn[j].size);
-
-            if ( is_cf(insn[j].id) )
+        if ( is_cf(insn[0].id) )
+        {
+            next_cf_vaddr = insn[0].address;
+            if ( VMI_FAILURE == vmi_pagetable_lookup(vmi, dtb, next_cf_vaddr, &next_cf_paddr) )
             {
-                next_cf_vaddr = insn[j].address;
-                if ( VMI_FAILURE == vmi_pagetable_lookup(vmi, dtb, next_cf_vaddr, &next_cf_paddr) )
-                {
-                    if ( debug ) printf("Failed to lookup next instruction PA for 0x%lx with PT 0x%lx\n", next_cf_vaddr, dtb);
-                    break;
-                }
-
-                found = true;
-
-                if ( debug ) printf("Found next control flow instruction @ 0x%lx: %s!\n", next_cf_vaddr, insn[j].mnemonic);
+                if ( debug ) printf("Failed to lookup next instruction PA for 0x%lx with PT 0x%lx\n", next_cf_vaddr, dtb);
                 break;
             }
+
+            found = true;
+
+            if ( debug ) printf("Found next control flow instruction @ 0x%lx: %s!\n", next_cf_vaddr, insn[0].mnemonic);
         }
         cs_free(insn, count);
     }
@@ -148,37 +141,60 @@ done:
     return found;
 }
 
-static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
+/*
+ * Determine if the event is at a sink site. Use physical address to check.
+ */
+static bool check_if_sink(vmi_instance_t vmi, vmi_event_t *event, event_response_t *ret)
 {
-    if ( debug )
-    {
-        printf("[TRACER %s] RIP: 0x%lx", traptype[event->type], event->x86_regs->rip);
+    if ( VMI_EVENT_INTERRUPT != event->type && VMI_EVENT_SINGLESTEP != event->type )
+        return false;
 
-        if ( !nocov )
-            printf(" CF limit: %lu/%lu\n", tracer_counter, limit);
-    }
+    addr_t rip_pa;
 
-    /* Check if RIP is right now at any of the sink points */
-    int c;
-    for (c=0; c < __SINK_MAX; c++)
+    if ( VMI_EVENT_INTERRUPT == event->type )
+        rip_pa = (event->interrupt_event.gfn << 12) + event->interrupt_event.offset;
+    else
+        rip_pa = (event->ss_event.gfn << 12) + event->ss_event.offset;
+
+    GSList *tmp;
+    for ( tmp=sink_list; tmp; tmp=tmp->next )
     {
-        if ( sink_vaddr[c] == event->x86_regs->rip )
+        struct sink *s = (struct sink*)tmp->data;
+
+        if ( s->paddr && s->paddr == rip_pa )
         {
             vmi_pause_vm(vmi);
             interrupted = 1;
             crash = 1;
 
-            if ( debug ) printf("\t Sink %s! Tracer counter: %lu. Crash: %i.\n", sinks[c], tracer_counter, crash);
+            if ( debug ) printf("\t Sink %s! Tracer counter: %lu. Crash: %i.\n", s->function, tracer_counter, crash);
 
             if ( VMI_EVENT_INTERRUPT == event->type )
                 event->interrupt_event.reinject = 0;
 
             if ( VMI_EVENT_SINGLESTEP == event->type )
-                return VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
+                *ret = VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
 
-            return 0;
+            return true;
         }
     }
+
+    return false;
+}
+
+static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
+{
+    if ( debug )
+    {
+        printf("[TRACER %s] RIP: 0x%lx\n", traptype[event->type], event->x86_regs->rip);
+
+        if ( !nocov && !ptcov )
+            printf("CF limit: %lu/%lu\n", tracer_counter, limit);
+    }
+
+    event_response_t ret = 0;
+    if ( check_if_sink(vmi, event, &ret) )
+        return ret;
 
     /* Check if we hit the end harness */
     if ( VMI_EVENT_CPUID == event->type )
@@ -402,18 +418,59 @@ void close_trace(vmi_instance_t vmi) {
     if ( debug ) printf("Closing tracer\n");
 }
 
+/*
+ * These HVM params are useless for the forks we use for fuzzing.
+ * Unset them to reduce the resetting overhead.
+ */
+static void unset_hvm_params(void)
+{
+    static const unsigned int unset_params[] = {
+        HVM_PARAM_STORE_PFN,
+        HVM_PARAM_STORE_EVTCHN,
+        HVM_PARAM_CONSOLE_PFN,
+        HVM_PARAM_CONSOLE_EVTCHN,
+        HVM_PARAM_PAGING_RING_PFN,
+        HVM_PARAM_IDENT_PT,
+        HVM_PARAM_CONSOLE_PFN,
+        HVM_PARAM_ACPI_IOPORTS_LOCATION,
+        HVM_PARAM_VM_GENERATION_ID_ADDR,
+        HVM_PARAM_CALLBACK_IRQ,
+    };
+
+    unsigned int i;
+    for ( i = 0; i < sizeof(unset_params)/sizeof(unsigned int); i++ )
+        xc_hvm_param_set(xc, sinkdomid, unset_params[i], 0);
+}
+
 /* Inject breakpoints into the sink points in the sink VM */
 bool make_sink_ready(void)
 {
     vmi_instance_t sink_vmi = NULL;
     bool ret = false;
 
-    if ( !setup_vmi(&sink_vmi, NULL, sinkdomid, json, false, true) )
+    if ( !setup_vmi(&sink_vmi, NULL, sinkdomid, json, false, true, true) )
         return ret;
 
-    int c;
-    for(c=0; c < __SINK_MAX; c++)
+    addr_t kaslr;
+    if ( debug && VMI_OS_LINUX == os && VMI_SUCCESS == vmi_get_offset(sink_vmi, "linux_kaslr", &kaslr) )
+        printf("Linux KASLR offset: 0x%lx\n", kaslr);
+
+    if ( !sink_list )
     {
+        // Create sink list based on built-in defaults
+        unsigned int c;
+        builtin_list = true;
+        if ( debug ) printf("Creating sink list from built-in information listed in sink.h\n");
+
+        for(c=0; c < sizeof(sinks)/sizeof(struct sink); c++ )
+            sink_list = g_slist_prepend(sink_list, (void*)&sinks[c]);
+    }
+
+    GSList *tmp;
+    for ( tmp=sink_list; tmp; tmp=tmp->next )
+    {
+        struct sink *s = (struct sink*)tmp->data;
+
         /*
          * Note that we assume all sink points defined by name are standard kernel functions and thus LibVMI
          * can just look up their address in the provided json. We can use LibVMI to look up functions in other
@@ -421,27 +478,36 @@ bool make_sink_ready(void)
          * the kernel here is to get the addresses with KASLR adjustment automatically. For kernel modules
          * the address would need to be added to the module's base address.
          */
-        if ( !sink_vaddr[c] && VMI_FAILURE == vmi_translate_ksym2v(sink_vmi, sinks[c], &sink_vaddr[c]) )
+        if ( !s->vaddr && s->function && VMI_FAILURE == vmi_translate_ksym2v(sink_vmi, s->function, &s->vaddr) )
         {
-            fprintf(stderr, "Failed to find address for sink %s in the JSON\n", sinks[c]);
+            fprintf(stderr, "Failed to find address for sink %s in the JSON\n", s->function);
             continue;
         }
 
-        if ( !sink_paddr[c] && VMI_FAILURE == vmi_pagetable_lookup(sink_vmi, target_pagetable, sink_vaddr[c], &sink_paddr[c]) )
+        if ( !s->paddr && s->vaddr && VMI_FAILURE == vmi_pagetable_lookup(sink_vmi, target_pagetable, s->vaddr, &s->paddr) )
         {
-            if ( debug ) printf("Failed to translate %s V2P 0x%lx\n", sinks[c], sink_vaddr[c]);
+            if ( debug ) printf("Failed to translate %s V2P 0x%lx\n", s->function, s->vaddr);
             goto done;
         }
-        if ( VMI_FAILURE == vmi_write_pa(sink_vmi, sink_paddr[c], 1, &cc, NULL) )
+
+        if ( !s->paddr )
         {
-            if ( debug ) printf("Failed to write %s PA 0x%lx\n", sinks[c], sink_paddr[c]);
+            if ( debug ) printf("No physical address is defined for a sink! %s 0x%lx\n", s->function, s->vaddr);
+            goto done;
+        }
+
+        if ( VMI_FAILURE == vmi_write_pa(sink_vmi, s->paddr, 1, &cc, NULL) )
+        {
+            if ( debug ) printf("Failed to write %s PA 0x%lx\n", s->function, s->paddr);
             goto done;
         }
 
         if ( debug )
             printf("Setting breakpoint on sink %s 0x%lx -> 0x%lx\n",
-                   sinks[c], sink_vaddr[c], sink_paddr[c]);
+                   s->function, s->vaddr, s->paddr);
     }
+
+    unset_hvm_params();
 
     if ( debug ) printf("Sinks are ready\n");
     ret = true;

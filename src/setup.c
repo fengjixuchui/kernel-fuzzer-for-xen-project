@@ -6,26 +6,48 @@
 
 extern int interrupted;
 extern bool parent_ready;
+extern bool extended_cpuid;
 
 static vmi_event_t cpuid_event, cc_event;
 
+static size_t buf_size;
+static addr_t buf_addr;
+static addr_t rip;
+
+static void cpuid_done(vmi_instance_t vmi, vmi_event_t *event)
+{
+    vmi_pause_vm(vmi);
+    vmi_clear_event(vmi, event, NULL);
+
+    vmi_set_vcpureg(vmi, rip, RIP, event->vcpu_id);
+
+    parent_ready = 1;
+    interrupted = 1;
+}
+
 static event_response_t start_cpuid_cb(vmi_instance_t vmi, vmi_event_t *event)
 {
-    addr_t rip = event->x86_regs->rip + event->cpuid_event.insn_length;
+    rip = event->x86_regs->rip + event->cpuid_event.insn_length;
 
-    if ( event->cpuid_event.leaf == 0x13371337 )
+    if ( event->cpuid_event.leaf == magic_cpuid )
     {
-        printf("Got start cpuid callback with leaf: 0x%x 0x%lx\n", event->cpuid_event.leaf, event->x86_regs->rip);
+        printf("Got start cpuid callback with leaf: 0x%x subleaf: 0x%x\n",
+               event->cpuid_event.leaf, event->cpuid_event.subleaf);
 
-        vmi_pause_vm(vmi);
-        vmi_clear_event(vmi, event, NULL);
+        if ( extended_cpuid )
+            buf_size = event->cpuid_event.subleaf;
+        else
+            cpuid_done(vmi, event);
+    }
+    else
+    if ( buf_size )
+    {
+        buf_addr = event->cpuid_event.leaf;
+        buf_addr <<= 32;
+        buf_addr |= event->cpuid_event.subleaf;
 
-        vmi_set_vcpureg(vmi, rip, RIP, event->vcpu_id);
-
-        parent_ready = 1;
-        interrupted = 1;
-
-        return 0;
+        printf("Target buffer & size: 0x%lx %lu\n", buf_addr, buf_size);
+        cpuid_done(vmi, event);
     }
 
     event->x86_regs->rip = rip;
@@ -35,13 +57,9 @@ static event_response_t start_cpuid_cb(vmi_instance_t vmi, vmi_event_t *event)
 
 static event_response_t start_cc_cb(vmi_instance_t vmi, vmi_event_t *event)
 {
-    access_context_t ctx = {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = event->x86_regs->cr3,
-        .addr = event->x86_regs->rip
-    };
+    addr_t pa = (event->interrupt_event.gfn << 12) + event->interrupt_event.offset;
 
-    if ( VMI_SUCCESS == vmi_write_8(vmi, &ctx, &start_byte) )
+    if ( VMI_SUCCESS == vmi_write_8_pa(vmi, pa, &start_byte) )
     {
         event->interrupt_event.reinject = 0;
         parent_ready = 1;
@@ -68,7 +86,7 @@ static void waitfor_start(vmi_instance_t vmi)
         if ( VMI_FAILURE == vmi_register_event(vmi, &cpuid_event) )
             return;
 
-        printf("Waiting for harness start (cpuid with leaf 0x13371337)\n");
+        printf("Waiting for harness start (cpuid with leaf 0x%x)\n", magic_cpuid);
 
     } else {
         SETUP_INTERRUPT_EVENT(&cc_event, start_cc_cb);
@@ -88,13 +106,12 @@ static void waitfor_start(vmi_instance_t vmi)
 
 bool make_parent_ready(void)
 {
-    if ( !setup_vmi(&parent_vmi, domain, domid, json, setup, true) )
+    if ( !setup_vmi(&parent_vmi, domain, domid, NULL, setup, false, false) )
     {
         fprintf(stderr, "Unable to start VMI on domain\n");
         return false;
     }
 
-    pm = vmi_get_page_mode(parent_vmi, 0);
     vcpus = vmi_get_num_vcpus(parent_vmi);
 
     if ( vcpus > 1 )
@@ -103,12 +120,6 @@ bool make_parent_ready(void)
         return false;
     }
 
-    addr_t kaslr;
-    if ( debug && VMI_OS_LINUX == os && VMI_SUCCESS == vmi_get_offset(parent_vmi, "linux_kaslr", &kaslr) )
-        printf("Linux KASLR offset: 0x%lx\n", kaslr);
-
-    if ( !domain )
-        domain = vmi_get_name(parent_vmi);
     if ( !domid )
         domid = vmi_get_vmid(parent_vmi);
     if ( setup )

@@ -55,7 +55,7 @@ static bool make_fuzz_ready()
     if ( !fuzzdomid )
         return false;
 
-    if ( !setup_vmi(&vmi, NULL, fuzzdomid, NULL, true, false) )
+    if ( !setup_vmi(&vmi, NULL, fuzzdomid, NULL, true, false, true) )
     {
         fprintf(stderr, "Unable to start VMI on fuzz domain %u\n", fuzzdomid);
         return false;
@@ -87,8 +87,7 @@ static bool fuzz(void)
     if ( afl )
     {
         afl_rewind();
-        if ( !ptcov )
-            afl_instrument_location(start_rip);
+        afl_instrument_location(start_rip);
         afl_wait();
     }
 
@@ -146,9 +145,10 @@ static void usage(void)
     printf("Inputs required for SETUP step:\n");
     printf("\t  --setup\n");
     printf("\t  --domain <domain name> OR --domid <domain id>\n");
-    printf("\t  --json <path to kernel debug json>\n");
     printf("\tOptional inputs:\n");
     printf("\t  --harness cpuid|breakpoint (default is cpuid)\n");
+    printf("\t  --magic-cpuid <magic cpuid leaf signaling start> (default is 0x13371337)\n");
+    printf("\t  --extended-cpuid (Use two-cpuids to obtain target address & size)\n");
     printf("\t  --start-byte <byte> (used to replace the starting breakpoint harness)\n");
 
     printf("\n\n");
@@ -167,6 +167,9 @@ static void usage(void)
     printf("\t  --nocov (disable coverage tracing)\n");
     printf("\t  --ptcov (use IPT coverage tracing)\n");
     printf("\t  --detect-doublefetch <kernel virtual address on page to detect doublefetch>\n");
+    printf("\t  --sink <function_name>\n");
+    printf("\t  --sink-vaddr <virtual address>\n");
+    printf("\t  --sink-paddr <physical address>\n");
 
     printf("\n\n");
     printf("Optional global inputs:\n");
@@ -197,16 +200,22 @@ int main(int argc, char** argv)
         {"loopmode", no_argument, NULL, 'O'},
         {"keep", no_argument, NULL, 'K'},
         {"nocov", no_argument, NULL, 'N'},
-        {"ptcov", no_argument, NULL, 'P'},
+        {"ptcov", no_argument, NULL, 't'},
         {"detect-doublefetch", required_argument, NULL, 'D'},
+        {"magic-cpuid", required_argument, NULL, 'm'},
+        {"extended-cpuid", required_argument, NULL, 'c'},
+        {"sink", required_argument, NULL, 'n'},
+        {"sink-vaddr", required_argument, NULL, 'V'},
+        {"sink-paddr", required_argument, NULL, 'P'},
         {NULL, 0, NULL, 0}
     };
-    const char* opts = "d:i:j:f:a:l:F:H:S:svhOKNPD";
+    const char* opts = "d:i:j:f:a:l:F:H:S:m:n:V:P:svchtOKND";
     limit = ~0;
     unsigned long refork = 0;
     bool keep = false;
 
     harness_cpuid = true;
+    magic_cpuid = 0x13371337;
     input_path = NULL;
     input_size = 0;
     input_limit = 0;
@@ -265,12 +274,39 @@ int main(int argc, char** argv)
         case 'N':
             nocov = true;
             break;
-        case 'P':
+        case 't':
             ptcov = true;
             break;
         case 'D':
             doublefetch = strtoull(optarg, NULL, 0);
             break;
+        case 'm':
+            magic_cpuid = strtoul(optarg, NULL, 0);
+            break;
+        case 'c':
+            extended_cpuid = true;
+            break;
+        case 'n':
+        {
+            struct sink *s = g_malloc0(sizeof(struct sink));
+            s->function = optarg;
+            sink_list = g_slist_prepend(sink_list, s);
+            break;
+        }
+        case 'V':
+        {
+            struct sink *s = g_malloc0(sizeof(struct sink));
+            s->vaddr = strtoull(optarg, NULL, 0);
+            sink_list = g_slist_prepend(sink_list, s);
+            break;
+        }
+        case 'P':
+        {
+            struct sink *s = g_malloc0(sizeof(struct sink));
+            s->paddr = strtoull(optarg, NULL, 0);
+            sink_list = g_slist_prepend(sink_list, s);
+            break;
+        }
         case 'h': /* fall-through */
         default:
             usage();
@@ -278,7 +314,7 @@ int main(int argc, char** argv)
         };
     }
 
-    if ( (!domain && !domid) || !json || (!address && !setup) || (!setup && (!input_path || !input_limit)) )
+    if ( (!domain && !domid) || (!address && !setup) || (!setup && (!json || !input_path || !input_limit)) )
     {
         usage();
         return -1;
@@ -315,12 +351,6 @@ int main(int argc, char** argv)
     if ( !(xc = xc_interface_open(0, 0, 0)) )
     {
         fprintf(stderr, "Failed to grab xc interface\n");
-        goto done;
-    }
-
-    if ( cs_open(CS_ARCH_X86, pm == VMI_PM_IA32E ? CS_MODE_64 : CS_MODE_32, &cs_handle) )
-    {
-        fprintf(stderr, "Capstone init failed\n");
         goto done;
     }
 
@@ -362,6 +392,12 @@ int main(int argc, char** argv)
     if ( !make_sink_ready() )
     {
         fprintf(stderr, "Seting up sinks on VM fork domid %u failed\n", sinkdomid);
+        goto done;
+    }
+
+    if ( !nocov && !ptcov && cs_open(CS_ARCH_X86, pm == VMI_PM_IA32E ? CS_MODE_64 : CS_MODE_32, &cs_handle) )
+    {
+        fprintf(stderr, "Capstone init failed\n");
         goto done;
     }
 
@@ -418,6 +454,14 @@ done:
         xc_domain_destroy(xc, fuzzdomid);
     if ( sinkdomid && !keep )
         xc_domain_destroy(xc, sinkdomid);
+
+    if ( sink_list )
+    {
+        if ( !builtin_list )
+            g_slist_free_full(sink_list, g_free);
+        else
+            g_slist_free(sink_list);
+    }
 
     xc_interface_close(xc);
     cs_close(&cs_handle);
