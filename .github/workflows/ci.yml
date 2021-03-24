@@ -125,7 +125,6 @@ jobs:
           export CC=clang
           git submodule update --init AFLplusplus
           cd AFLplusplus
-          patch -p1 < ../patches/0001-AFLplusplus-Xen-mode.patch
           make
           make PREFIX="" install
 
@@ -146,7 +145,7 @@ jobs:
           cd ..
           ls -la
 
-      - name: Create Release
+      - name: Create new release
         id: create_release
         uses: actions/create-release@v1
         if: github.ref == 'refs/heads/master'
@@ -169,3 +168,13 @@ jobs:
           asset_path: ./kfx.tar.gz
           asset_name: kfx.tar.gz
           asset_content_type: application/tar+gzip
+
+      - name: Delete old release
+        uses: dev-drprasad/delete-older-releases@v0.1.0
+        if: github.ref == 'refs/heads/master'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          keep_latest: 1
+          delete_tags: true
+

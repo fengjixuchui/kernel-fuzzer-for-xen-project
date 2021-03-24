@@ -1,5 +1,6 @@
 bin_PROGRAMS = kfx
-kfx_SOURCES = src/main.c src/private.h \
+kfx_SOURCES = src/main.c \
+              src/private.c src/private.h \
               src/signal.c src/signal.h \
               src/vmi.c src/vmi.h \
               src/setup.c src/setup.h \
@@ -45,6 +46,5 @@ dmamonitor_CFLAGS = $(CFLAGS) $(VMI_CFLAGS) $(CAPSTONE_CFLAGS) $(LIBXC_CFLAGS) $
 
 ACLOCAL_AMFLAGS=-I m4
 EXTRA_DIST = configure.ac README.md \
-             tools/README tools/Makefile tools/vmfork.go \
              patches/0001-AFL-Xen-mode.patch \
-             testmodule/Makefile testmodule/testmodule.c
+             testmodule/Makefile testmodule/testmodule.c testmodule/doublefetch.c

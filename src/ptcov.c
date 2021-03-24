@@ -14,14 +14,7 @@
 #include <libvmi/libvmi.h>
 #include <libxdc.h>
 
-#include "afl.h"
-
-extern xc_interface *xc;
-extern uint32_t fuzzdomid;
-extern bool debug;
-extern reg_t target_pagetable;
-extern vmi_instance_t vmi;
-extern void *afl_area_ptr;
+#include "private.h"
 
 static uint8_t *pt_buf, *buf;
 static void *bitmap;
@@ -77,6 +70,13 @@ static void decode_cb(void* fd, uint64_t src, uint64_t dst)
 
     if ( debug ) printf("[IPT] 0x%lx -> 0x%lx\n", src, dst);
 }
+
+static void record_cb(void* fd, uint64_t src, uint64_t dst)
+{
+    (void)fd;
+    (void)src;
+    g_hash_table_insert(codecov, GSIZE_TO_POINTER(dst), NULL);
+}
 /* *************************************************************** */
 
 bool setup_pt(void)
@@ -126,10 +126,11 @@ bool setup_pt(void)
     if ( !(decoder = libxdc_init(filter, &page_cache_fetch, NULL, map, MAP_SIZE)) )
         return false;
 
+    if ( record_codecov )
+        libxdc_register_bb_callback(decoder, &record_cb, NULL);
+
     if ( debug )
     {
-        //libxdc_register_bb_callback(decoder, &decode_cb, NULL);
-
         libxdc_enable_tracing(decoder);
         int fd = open("/tmp/decoder_temp_trace_file", O_CREAT | O_TRUNC | O_WRONLY, S_IRWXU);
         libxdc_register_edge_callback(decoder, &decode_cb, &fd);

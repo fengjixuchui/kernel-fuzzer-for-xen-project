@@ -55,7 +55,7 @@ static bool make_fuzz_ready()
     if ( !fuzzdomid )
         return false;
 
-    if ( !setup_vmi(&vmi, NULL, fuzzdomid, NULL, true, false, true) )
+    if ( !setup_vmi(&vmi, NULL, fuzzdomid, NULL, true, true) )
     {
         fprintf(stderr, "Unable to start VMI on fuzz domain %u\n", fuzzdomid);
         return false;
@@ -147,8 +147,8 @@ static void usage(void)
     printf("\t  --domain <domain name> OR --domid <domain id>\n");
     printf("\tOptional inputs:\n");
     printf("\t  --harness cpuid|breakpoint (default is cpuid)\n");
-    printf("\t  --magic-cpuid <magic cpuid leaf signaling start> (default is 0x13371337)\n");
-    printf("\t  --extended-cpuid (Use two-cpuids to obtain target address & size)\n");
+    printf("\t  --magic-mark <magic number signaling start harness> (default is 0x13371337)\n");
+    printf("\t  --extended-mark (Use start harness to obtain target address & size)\n");
     printf("\t  --start-byte <byte> (used to replace the starting breakpoint harness)\n");
 
     printf("\n\n");
@@ -157,7 +157,7 @@ static void usage(void)
     printf("\t  --input-limit <limit input size>\n");
     printf("\t  --address <kernel virtual address to inject input to>\n");
     printf("\t  --domain <domain name> OR --domid <domain id>\n");
-    printf("\t  --json <path to kernel debug json>\n");
+    printf("\t  --json <path to kernel debug json> (needed only if default sink list is used or --sink is used)\n");
     printf("\tOptional inputs:\n");
     printf("\t  --limit <limit FUZZING execution to # of CF instructions>\n");
     printf("\t  --harness cpuid|breakpoint (default is cpuid)\n");
@@ -170,6 +170,7 @@ static void usage(void)
     printf("\t  --sink <function_name>\n");
     printf("\t  --sink-vaddr <virtual address>\n");
     printf("\t  --sink-paddr <physical address>\n");
+    printf("\t  --record-codecov <path to save file>\n");
 
     printf("\n\n");
     printf("Optional global inputs:\n");
@@ -202,20 +203,22 @@ int main(int argc, char** argv)
         {"nocov", no_argument, NULL, 'N'},
         {"ptcov", no_argument, NULL, 't'},
         {"detect-doublefetch", required_argument, NULL, 'D'},
-        {"magic-cpuid", required_argument, NULL, 'm'},
-        {"extended-cpuid", required_argument, NULL, 'c'},
+        {"magic-mark", required_argument, NULL, 'm'},
+        {"extended-mark", required_argument, NULL, 'c'},
         {"sink", required_argument, NULL, 'n'},
         {"sink-vaddr", required_argument, NULL, 'V'},
         {"sink-paddr", required_argument, NULL, 'P'},
+        {"record-codecov", required_argument, NULL, 'R'},
         {NULL, 0, NULL, 0}
     };
-    const char* opts = "d:i:j:f:a:l:F:H:S:m:n:V:P:svchtOKND";
+    const char* opts = "d:i:j:f:a:l:F:H:S:m:n:V:P:R:svchtOKND";
     limit = ~0;
     unsigned long refork = 0;
     bool keep = false;
+    bool default_magic_mark = true;
 
+    magic_mark = 0x13371337;
     harness_cpuid = true;
-    magic_cpuid = 0x13371337;
     input_path = NULL;
     input_size = 0;
     input_limit = 0;
@@ -281,10 +284,11 @@ int main(int argc, char** argv)
             doublefetch = strtoull(optarg, NULL, 0);
             break;
         case 'm':
-            magic_cpuid = strtoul(optarg, NULL, 0);
+            default_magic_mark = false;
+            magic_mark = strtoul(optarg, NULL, 0);
             break;
         case 'c':
-            extended_cpuid = true;
+            extended_mark = true;
             break;
         case 'n':
         {
@@ -307,6 +311,9 @@ int main(int argc, char** argv)
             sink_list = g_slist_prepend(sink_list, s);
             break;
         }
+        case 'R':
+            record_codecov = optarg;
+            break;
         case 'h': /* fall-through */
         default:
             usage();
@@ -314,16 +321,22 @@ int main(int argc, char** argv)
         };
     }
 
-    if ( (!domain && !domid) || (!address && !setup) || (!setup && (!json || !input_path || !input_limit)) )
+    if ( (!domain && !domid) || (!address && !setup) || (!setup && ((!json && !sink_list) || !input_path || !input_limit)) )
     {
         usage();
         return -1;
     }
 
-    if ( !harness_cpuid && !start_byte )
+    if ( !harness_cpuid )
     {
-        printf("For breakpoint harness --start-byte with a value must be provided (NOP is always a good option, 0x90)\n");
-        return -1;
+        if ( !start_byte )
+        {
+            printf("For breakpoint harness --start-byte with a value must be provided (NOP is always a good option, 0x90)\n");
+            return -1;
+        }
+
+        if ( default_magic_mark )
+            magic_mark = 0;
     }
 
     if ( logfile )
@@ -378,16 +391,20 @@ int main(int argc, char** argv)
 
     afl_setup();
 
-    input_file = fopen(input_path,"r"); // Sanity check
-    if ( !input_file )
+    if ( !afl )
     {
-        fprintf(stderr, "Failed to open input file %s\n", input_path);
-        goto done;
-    }
-    fclose(input_file); // Closing for now, will reopen when needed
-    input_file = NULL;
+        input_file = fopen(input_path,"r"); // Sanity check
+        if ( !input_file )
+        {
+            fprintf(stderr, "Failed to open input file %s\n", input_path);
+            goto done;
+        }
+        fclose(input_file); // Closing for now, will reopen when needed
 
-    if ( !afl ) printf("Fork VMs created: %u -> %u -> %u\n", domid, sinkdomid, fuzzdomid);
+        printf("Fork VMs created: %u -> %u -> %u\n", domid, sinkdomid, fuzzdomid);
+    }
+
+    input_file = NULL;
 
     if ( !make_sink_ready() )
     {
