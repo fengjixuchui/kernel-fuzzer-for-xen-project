@@ -9,6 +9,7 @@ struct sink {
     const char *function;
     addr_t vaddr;
     addr_t paddr;
+    bool ignore;
 };
 
 /*
@@ -22,6 +23,8 @@ struct sink {
  *
  * So in essence we can define the sink points as anything of interest that we would
  * want AFL to record if its reached.
+ *
+ * Sink functions listed here that are not found in the JSON will be skipped.
  */
 static struct sink sinks[] = {
     { .function = "panic" },
@@ -33,7 +36,8 @@ static struct sink sinks[] = {
      * is a legitimate page-fault that would page memory back in, it won't be able
      * to do that since there is no disk.
      */
-    { .function = "page_fault" }, // NOTE: after kernel 5.8 it is named asm_exc_page_fault
+    { .function = "page_fault" }, // <5.8 kernels
+    { .function = "asm_exc_page_fault" }, // >=5.8 kernels
 
     /*
      * Catch when KASAN starts to report an error it caught.
@@ -45,6 +49,11 @@ static struct sink sinks[] = {
      */
     { .function = "ubsan_prologue" },
 
+    /*
+     * Catch when KMSAN starts to report an error it caught.
+     * See https://github.com/google/kmsan
+     */
+    { .function = "kmsan_report" },
 
     /*
      * You can manually define sinks by virtual address or physical address as well.
@@ -53,6 +62,13 @@ static struct sink sinks[] = {
      * that are listed in here.
      */
     //{ .function = "custom sink", .vaddr = 0xffffffdeadbeef },
+
+    /*
+     * You can define sink points to stop fuzzing at when reached without reporting
+     * a crash. This is useful to close down loose paths that slow down the fuzzing
+     * without having to recompile the target with an endharness in place.
+     */
+    //{ .function = "printk", .ignore = 1 },
 };
 
 #endif

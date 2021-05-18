@@ -39,11 +39,11 @@ static bool inject_input(vmi_instance_t vmi)
     if ( !input || !input_size )
         return false;
 
-    access_context_t ctx = {
+    ACCESS_CONTEXT(ctx,
         .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = target_pagetable,
+        .pt = target_pagetable,
         .addr = address
-    };
+    );
 
     if ( debug ) printf("Writing %lu bytes of input to 0x%lx\n", input_size, address);
 
@@ -204,14 +204,15 @@ int main(int argc, char** argv)
         {"ptcov", no_argument, NULL, 't'},
         {"detect-doublefetch", required_argument, NULL, 'D'},
         {"magic-mark", required_argument, NULL, 'm'},
-        {"extended-mark", required_argument, NULL, 'c'},
+        {"extended-mark", no_argument, NULL, 'c'},
         {"sink", required_argument, NULL, 'n'},
         {"sink-vaddr", required_argument, NULL, 'V'},
         {"sink-paddr", required_argument, NULL, 'P'},
         {"record-codecov", required_argument, NULL, 'R'},
+        {"record-memaccess", required_argument, NULL, 'M'},
         {NULL, 0, NULL, 0}
     };
-    const char* opts = "d:i:j:f:a:l:F:H:S:m:n:V:P:R:svchtOKND";
+    const char* opts = "d:i:j:f:a:l:F:H:S:m:n:V:P:R:M:svchtOKND";
     limit = ~0;
     unsigned long refork = 0;
     bool keep = false;
@@ -281,7 +282,7 @@ int main(int argc, char** argv)
             ptcov = true;
             break;
         case 'D':
-            doublefetch = strtoull(optarg, NULL, 0);
+            doublefetch = g_slist_prepend(doublefetch, GSIZE_TO_POINTER(strtoull(optarg, NULL, 0)));
             break;
         case 'm':
             default_magic_mark = false;
@@ -313,6 +314,9 @@ int main(int argc, char** argv)
         }
         case 'R':
             record_codecov = optarg;
+            break;
+        case 'M':
+            record_memaccess = optarg;
             break;
         case 'h': /* fall-through */
         default:

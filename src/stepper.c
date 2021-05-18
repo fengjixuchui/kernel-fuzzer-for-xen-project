@@ -9,6 +9,7 @@
 #include <getopt.h>
 #include <xenctrl.h>
 #include <capstone.h>
+#include <glib.h>
 #include "vmi.h"
 #include "signal.h"
 
@@ -35,29 +36,38 @@ static void usage(void)
     printf("\t --reset\n");
 }
 
-void print_instruction(vmi_instance_t _vmi, addr_t dtb, addr_t addr, bool *cpuid)
+void print_instruction(vmi_instance_t _vmi, addr_t cr3, addr_t addr, bool *cpuid)
 {
     unsigned char buf[15] = {0};
     cs_insn *insn = NULL;
     size_t read = 0, insn_count = 0;
 
-    access_context_t ctx = {
+    ACCESS_CONTEXT(ctx,
         .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = dtb,
+        .pt = cr3,
         .addr = addr
-    };
+    );
 
     vmi_read(_vmi, &ctx, 15, buf, &read);
 
     if ( read )
     {
-        insn_count = cs_disasm(cs_handle, buf, read, dtb, 0, &insn);
+        insn_count = cs_disasm(cs_handle, buf, read, cr3, 0, &insn);
 
         if ( cpuid && insn[0].id == X86_INS_CPUID )
             *cpuid = true;
     }
 
-    printf("%5lu: 0x%16lx %10s ", count, addr, insn_count ? insn[0].mnemonic : "-");
+    printf("%5lu: 0x%16lx  ", count, addr);
+
+    if ( insn_count )
+    {
+        gchar *str = g_strconcat(insn[0].mnemonic, " ", insn[0].op_str, NULL);
+        printf("%-40s\t", str);
+        g_free(str);
+    } else
+        printf("%-40s\t", "-");
+
     vmi_print_hex(buf, read);
 
     if ( insn_count )

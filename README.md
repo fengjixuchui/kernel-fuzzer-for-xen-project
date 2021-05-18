@@ -99,7 +99,7 @@ echo "none /proc/xen xenfs defaults,nofail 0 0" >> /etc/fstab
 systemctl enable xen-qemu-dom0-disk-backend.service
 systemctl enable xen-init-dom0.service
 systemctl enable xenconsoled.service
-echo "GRUB_CMDLINE_XEN_DEFAULT=\"hap_1gb=false hap_2mb=false dom0_mem=4096M\"" >> /etc/default/grub
+echo "GRUB_CMDLINE_XEN_DEFAULT=\"hap_1gb=false hap_2mb=false dom0_mem=6096M hpet=legacy-replacement\"" >> /etc/default/grub
 update-grub
 reboot
 ```
@@ -393,8 +393,10 @@ sudo ./kfx --domain debian --json ~/debian.json --debug --input /path/to/input/f
 ---------------------------------
 Using Intel Processor Trace to collect the coverage trace information can significantly boost your fuzzing speed. For this mode to activate you have to add the following line to your VM's config:
 ```
-processor_trace_buf_kb=65536
+vmtrace_buf_kb=65536
 ```
+
+**Make sure your dom0 Linux kernel is a recent one. For example linux-image-5.10.0-1019-oem in the Ubuntu 20.04 repository has been confirmed to work. Linux 5.11 or newer will also work.**
 
 When the VM is booted with this option set you can activate Intel PT decoding using the kfx option `--ptcov`. You can adjust the buffer size up to 4GB in case you are fuzzing large code-segments. Beware that each fork will get an individual PT buffer allocated for it, so keep in mind the total memory limit your system has.
 
@@ -442,23 +444,17 @@ In case you want to add more then one harness to your target code, you can use t
 ```
 static inline void harness_extended(unsigned int magic, void *a, size_t s)
 {
-    unsigned int high = (unsigned long)a >> 32;
-
     asm volatile ("cpuid"
-                  : "=a" (magic)
-                  : "a" (magic), "c" (s)
-                  : "bx", "dx");
-    asm volatile ("cpuid"
-                  : "=a" (magic)
-                  : "a" (high), "c" (a)
+                  : "=a" (magic), "=c" (magic), "=S" (magic)
+                  : "a" (magic), "c" (s), "S" (a)
                   : "bx", "dx");
 }
 
 ```
 
-This allows you use any CPUID as your start marker so you can differentiate between them when running `--setup` with the `--magic-cpuid <magic number>` option. For the end harness you will still have to use `0x13371337` as the magic CPUID.
+This allows you to use any CPUID as your start marker so you can differentiate between them when running `--setup` with the `--magic-mark <magic>` option. For the end harness you will still have to use `0x13371337` as the magic CPUID.
 
-Notice that there are two CPUIDs in this extended harness, the second CPUID is optional but can be used to transfer the information about your target buffer's address and size automatically to kfx. During the `--setup` step add `-c` so that kfx will know that there are two CPUIDs used to mark your start. This also eliminates the need for adding any `printk`s the your target and copying it from the console.
+To also transfer extra information about the target memory and size, during the `--setup` step add `-c` so that kfx will know that extra information is transfered via the CPUID instruction. This also eliminates the need for adding any `printk`s the your target and copying it from the console. The reason why we use RSI ("S") above instead of RBX or RDX is because Xen clobbers the registers used by CPUID before we have a chance to see them (only the lower 32-bits of RAX and RCX will be visible to kfx). Feel free to place extra information into other general purpose registers as needed, you will be able to examine them by running `xen-hvmctx <domainid>`.
 
 You can also use software breakpoints (0xCC) as your harness which can be placed by standard debuggers like GDB. Use `--harness-type breakpoint` for this mode, which is particularly useful when you don't have access to the target's source-code to compile it with the CPUID-based harness. You will need to determine the start byte of the harness that was overwritten by the breakpoint and specify that to kfx with `--start-byte <byte>`. 
 
